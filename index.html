@@ -81,6 +81,25 @@
       gap: 0.5rem;
       flex-wrap: wrap;
     }
+    .config-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+      font-size: 0.85rem;
+    }
+    .config-row label {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .config-row input {
+      padding: 0.25rem 0.4rem;
+      border-radius: 999px;
+      border: 1px solid #d1d5db;
+      font-size: 0.85rem;
+      width: 90px;
+    }
   </style>
 </head>
 <body>
@@ -101,6 +120,20 @@
       Allow camera access and point it at a barcode. Each detected code will be added to the list.
     </p>
     <video id="video" playsinline></video>
+
+    <div class="config-row">
+      <label>
+        Length:
+        <input type="number" id="length-input" value="14" min="1" />
+      </label>
+      <label>
+        Prefix:
+        <input type="text" id="prefix-input" value="0123104265" />
+      </label>
+      <span class="status">
+        Only codes with this length and (optional) prefix are accepted.
+      </span>
+    </div>
   </div>
 
   <div class="card">
@@ -122,11 +155,10 @@
   </div>
 
   <script>
-    // ==== CONFIG FOR YOUR MARCHE DA BOLLO CODES ====
-    const EXPECTED_LENGTH = 14;        // change if they actually have 15, 18, etc.
-    const REQUIRED_PREFIX = "";        // e.g. "0123" if all codes start with that, else "".
+    // ==== dynamic validation config (editable from UI) ====
+    let expectedLength = 14;          // default for "0 1 23 104265 xxx x" → 14 digits
+    let requiredPrefix = "0123104265";
 
-    // ==== SUPPORT BADGE ====
     const supportBadge = document.getElementById("support-badge");
     if ("BarcodeDetector" in window) {
       supportBadge.textContent = "BarcodeDetector OK";
@@ -147,26 +179,29 @@
     const output = document.getElementById("codes-output");
     const statusMsg = document.getElementById("status-msg");
     const countBadge = document.getElementById("count-badge");
+    const lengthInput = document.getElementById("length-input");
+    const prefixInput = document.getElementById("prefix-input");
 
     let stream = null;
     let scanInterval = null;
     let barcodeDetector = null;
 
     let codes = [];
-    let codeSet = new Set();    // avoid duplicates
+    let codeSet = new Set();
 
-    // For "stability": require 2 consecutive readings of the same normalized code
+    // For stability: need the same valid code in 2 consecutive frames
     let candidateCode = null;
     let candidateCount = 0;
 
     function normalizeAndValidate(raw) {
       if (!raw) return null;
 
-      // keep only digits, since your codes are numeric
+      // numbers only (your codes are like "0 1 23 104265 xxx x")
       const digits = raw.replace(/\D/g, "");
 
-      if (digits.length !== EXPECTED_LENGTH) return null;
-      if (REQUIRED_PREFIX && !digits.startsWith(REQUIRED_PREFIX)) return null;
+      if (expectedLength && digits.length !== expectedLength) return null;
+
+      if (requiredPrefix && !digits.startsWith(requiredPrefix)) return null;
 
       return digits;
     }
@@ -185,7 +220,6 @@
       try {
         barcodeDetector = new BarcodeDetector({
           formats: [
-            // keep a few likely formats; these marche da bollo are often Code 128 / ITF-like
             "code_128",
             "code_39",
             "ean_13",
@@ -205,7 +239,6 @@
         stopBtn.disabled = false;
         statusMsg.textContent = "Scanning… point the camera at a barcode.";
 
-        // Scan every 300ms
         scanInterval = setInterval(async () => {
           if (!video || video.readyState !== 4) return;
           try {
@@ -214,11 +247,10 @@
               const raw = barcodes[0].rawValue;
               const value = normalizeAndValidate(raw);
               if (!value) {
-                // detected something but doesn't match your pattern
-                return;
+                return; // detected something but not matching your format
               }
 
-              // Stability: require the same value in 2 consecutive frames
+              // stability: same value at least twice in a row
               if (value === candidateCode) {
                 candidateCount++;
               } else {
@@ -227,7 +259,6 @@
               }
 
               if (candidateCount >= 2) {
-                // we trust this read
                 if (!codeSet.has(value)) {
                   codeSet.add(value);
                   codes.push(value);
@@ -236,8 +267,6 @@
                 } else {
                   statusMsg.textContent = "Already scanned: " + value;
                 }
-
-                // reset candidate so we don't keep re-adding
                 candidateCode = null;
                 candidateCount = 0;
               }
@@ -319,11 +348,24 @@
       statusMsg.textContent = "CSV downloaded.";
     });
 
-    // Keep manual edits in sync
+    // keep manual edits in sync
     output.addEventListener("input", () => {
       codes = output.value.split("\n").filter(Boolean);
       codeSet = new Set(codes);
       countBadge.textContent = codes.length;
+    });
+
+    // update config from inputs
+    lengthInput.addEventListener("input", () => {
+      const v = parseInt(lengthInput.value, 10);
+      expectedLength = isNaN(v) || v <= 0 ? 0 : v;
+    });
+
+    prefixInput.addEventListener("input", () => {
+      requiredPrefix = prefixInput.value.trim();
+      // strip non-digits just in case
+      requiredPrefix = requiredPrefix.replace(/\D/g, "");
+      prefixInput.value = requiredPrefix;
     });
 
     window.addEventListener("pagehide", stopScanning);
@@ -331,4 +373,3 @@
   </script>
 </body>
 </html>
-
