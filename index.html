@@ -122,7 +122,11 @@
   </div>
 
   <script>
-    // Check if BarcodeDetector is supported
+    // ==== CONFIG FOR YOUR MARCHE DA BOLLO CODES ====
+    const EXPECTED_LENGTH = 14;        // change if they actually have 15, 18, etc.
+    const REQUIRED_PREFIX = "";        // e.g. "0123" if all codes start with that, else "".
+
+    // ==== SUPPORT BADGE ====
     const supportBadge = document.getElementById("support-badge");
     if ("BarcodeDetector" in window) {
       supportBadge.textContent = "BarcodeDetector OK";
@@ -147,10 +151,25 @@
     let stream = null;
     let scanInterval = null;
     let barcodeDetector = null;
+
     let codes = [];
-    let codeSet = new Set();  // for duplicate prevention
-    let lastCode = null;
-    let lastCodeTime = 0;
+    let codeSet = new Set();    // avoid duplicates
+
+    // For "stability": require 2 consecutive readings of the same normalized code
+    let candidateCode = null;
+    let candidateCount = 0;
+
+    function normalizeAndValidate(raw) {
+      if (!raw) return null;
+
+      // keep only digits, since your codes are numeric
+      const digits = raw.replace(/\D/g, "");
+
+      if (digits.length !== EXPECTED_LENGTH) return null;
+      if (REQUIRED_PREFIX && !digits.startsWith(REQUIRED_PREFIX)) return null;
+
+      return digits;
+    }
 
     function updateOutput() {
       output.value = codes.join("\n");
@@ -166,14 +185,11 @@
       try {
         barcodeDetector = new BarcodeDetector({
           formats: [
-            "ean_13",
-            "ean_8",
+            // keep a few likely formats; these marche da bollo are often Code 128 / ITF-like
             "code_128",
             "code_39",
-            "upc_a",
-            "upc_e",
-            "itf",
-            "codabar"
+            "ean_13",
+            "itf"
           ]
         });
 
@@ -195,16 +211,23 @@
           try {
             const barcodes = await barcodeDetector.detect(video);
             if (barcodes.length > 0) {
-              const value = barcodes[0].rawValue;
-              const now = Date.now();
+              const raw = barcodes[0].rawValue;
+              const value = normalizeAndValidate(raw);
+              if (!value) {
+                // detected something but doesn't match your pattern
+                return;
+              }
 
-              if (!value) return;
+              // Stability: require the same value in 2 consecutive frames
+              if (value === candidateCode) {
+                candidateCount++;
+              } else {
+                candidateCode = value;
+                candidateCount = 1;
+              }
 
-              // Debounce + no duplicates: only add if not seen before
-              if (value !== lastCode || now - lastCodeTime > 1500) {
-                lastCode = value;
-                lastCodeTime = now;
-
+              if (candidateCount >= 2) {
+                // we trust this read
                 if (!codeSet.has(value)) {
                   codeSet.add(value);
                   codes.push(value);
@@ -213,6 +236,10 @@
                 } else {
                   statusMsg.textContent = "Already scanned: " + value;
                 }
+
+                // reset candidate so we don't keep re-adding
+                candidateCode = null;
+                candidateCount = 0;
               }
             }
           } catch (err) {
@@ -239,6 +266,8 @@
       startBtn.disabled = false;
       stopBtn.disabled = true;
       statusMsg.textContent = "Scanner stopped.";
+      candidateCode = null;
+      candidateCount = 0;
     }
 
     startBtn.addEventListener("click", startScanning);
@@ -258,8 +287,8 @@
     clearBtn.addEventListener("click", () => {
       codes = [];
       codeSet = new Set();
-      lastCode = null;
-      lastCodeTime = 0;
+      candidateCode = null;
+      candidateCount = 0;
       updateOutput();
       statusMsg.textContent = "List cleared.";
     });
@@ -270,7 +299,6 @@
         return;
       }
 
-      // Simple one-column CSV; header optional
       const header = "code";
       const csvContent = [header, ...codes]
         .map(line => `"${String(line).replace(/"/g, '""')}"`)
@@ -291,7 +319,7 @@
       statusMsg.textContent = "CSV downloaded.";
     });
 
-    // Keep codes + set in sync when user edits manually
+    // Keep manual edits in sync
     output.addEventListener("input", () => {
       codes = output.value.split("\n").filter(Boolean);
       codeSet = new Set(codes);
@@ -303,3 +331,4 @@
   </script>
 </body>
 </html>
+
