@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Barcode Scanner to Excel List</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 1rem;
+      background: #f5f5f5;
+      color: #222;
+    }
+    h1 {
+      font-size: 1.3rem;
+      margin-bottom: 0.5rem;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 1rem;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+      margin-bottom: 1rem;
+    }
+    video {
+      width: 100%;
+      max-height: 50vh;
+      border-radius: 12px;
+      background: #000;
+      object-fit: cover;
+    }
+    button {
+      padding: 0.6rem 1rem;
+      border-radius: 999px;
+      border: none;
+      cursor: pointer;
+      font-size: 0.95rem;
+      margin: 0.25rem 0.25rem 0.25rem 0;
+    }
+    button.primary {
+      background: #2563eb;
+      color: white;
+    }
+    button.secondary {
+      background: #e5e7eb;
+      color: #111827;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    textarea {
+      width: 100%;
+      min-height: 160px;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      padding: 0.5rem;
+      font-family: monospace;
+      font-size: 0.9rem;
+      box-sizing: border-box;
+      resize: vertical;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      background: #e5e7eb;
+      font-size: 0.75rem;
+      margin-left: 0.25rem;
+    }
+    .status {
+      font-size: 0.85rem;
+      color: #4b5563;
+      margin-top: 0.25rem;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>Barcode Scanner → Excel List</h1>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <strong>Camera scanner</strong>
+        <span class="badge" id="support-badge">Checking support…</span>
+      </div>
+      <div>
+        <button id="start-btn" class="primary">Start scanning</button>
+        <button id="stop-btn" class="secondary" disabled>Stop</button>
+      </div>
+    </div>
+    <p class="status" id="status-msg">
+      Allow camera access and point it at a barcode. Each detected code will be added to the list.
+    </p>
+    <video id="video" playsinline></video>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <strong>Scanned codes</strong>
+        <span class="badge" id="count-badge">0</span>
+      </div>
+      <div>
+        <button id="copy-btn" class="secondary">Copy list</button>
+        <button id="download-btn" class="secondary">Download CSV</button>
+        <button id="clear-btn" class="secondary">Clear</button>
+      </div>
+    </div>
+    <textarea id="codes-output" placeholder="Scanned codes will appear here, one per line…"></textarea>
+    <p class="status">
+      Paste this into Excel (or open the CSV): each line becomes a row in one column.
+    </p>
+  </div>
+
+  <script>
+    // Check if BarcodeDetector is supported
+    const supportBadge = document.getElementById("support-badge");
+    if ("BarcodeDetector" in window) {
+      supportBadge.textContent = "BarcodeDetector OK";
+      supportBadge.style.background = "#dcfce7";
+    } else {
+      supportBadge.textContent = "BarcodeDetector not supported";
+      supportBadge.style.background = "#fee2e2";
+      document.getElementById("status-msg").textContent =
+        "Your browser does not support BarcodeDetector. Try Chrome/Edge on Android. (This demo will not scan without it.)";
+    }
+
+    const video = document.getElementById("video");
+    const startBtn = document.getElementById("start-btn");
+    const stopBtn = document.getElementById("stop-btn");
+    const copyBtn = document.getElementById("copy-btn");
+    const clearBtn = document.getElementById("clear-btn");
+    const downloadBtn = document.getElementById("download-btn");
+    const output = document.getElementById("codes-output");
+    const statusMsg = document.getElementById("status-msg");
+    const countBadge = document.getElementById("count-badge");
+
+    let stream = null;
+    let scanInterval = null;
+    let barcodeDetector = null;
+    let codes = [];
+    let codeSet = new Set();  // for duplicate prevention
+    let lastCode = null;
+    let lastCodeTime = 0;
+
+    function updateOutput() {
+      output.value = codes.join("\n");
+      countBadge.textContent = codes.length;
+    }
+
+    async function startScanning() {
+      if (!("BarcodeDetector" in window)) {
+        alert("BarcodeDetector is not supported in this browser.");
+        return;
+      }
+
+      try {
+        barcodeDetector = new BarcodeDetector({
+          formats: [
+            "ean_13",
+            "ean_8",
+            "code_128",
+            "code_39",
+            "upc_a",
+            "upc_e",
+            "itf",
+            "codabar"
+          ]
+        });
+
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+          audio: false
+        });
+
+        video.srcObject = stream;
+        await video.play();
+
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        statusMsg.textContent = "Scanning… point the camera at a barcode.";
+
+        // Scan every 300ms
+        scanInterval = setInterval(async () => {
+          if (!video || video.readyState !== 4) return;
+          try {
+            const barcodes = await barcodeDetector.detect(video);
+            if (barcodes.length > 0) {
+              const value = barcodes[0].rawValue;
+              const now = Date.now();
+
+              if (!value) return;
+
+              // Debounce + no duplicates: only add if not seen before
+              if (value !== lastCode || now - lastCodeTime > 1500) {
+                lastCode = value;
+                lastCodeTime = now;
+
+                if (!codeSet.has(value)) {
+                  codeSet.add(value);
+                  codes.push(value);
+                  updateOutput();
+                  statusMsg.textContent = "Detected: " + value;
+                } else {
+                  statusMsg.textContent = "Already scanned: " + value;
+                }
+              }
+            }
+          } catch (err) {
+            console.error(err);
+            statusMsg.textContent = "Error during detection: " + err.message;
+          }
+        }, 300);
+      } catch (err) {
+        console.error(err);
+        statusMsg.textContent = "Could not access camera: " + err.message;
+      }
+    }
+
+    function stopScanning() {
+      if (scanInterval) {
+        clearInterval(scanInterval);
+        scanInterval = null;
+      }
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+      video.srcObject = null;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      statusMsg.textContent = "Scanner stopped.";
+    }
+
+    startBtn.addEventListener("click", startScanning);
+    stopBtn.addEventListener("click", stopScanning);
+
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(output.value);
+        statusMsg.textContent = "List copied to clipboard.";
+      } catch (err) {
+        output.focus();
+        output.select();
+        statusMsg.textContent = "Select & copy manually (clipboard not allowed).";
+      }
+    });
+
+    clearBtn.addEventListener("click", () => {
+      codes = [];
+      codeSet = new Set();
+      lastCode = null;
+      lastCodeTime = 0;
+      updateOutput();
+      statusMsg.textContent = "List cleared.";
+    });
+
+    downloadBtn.addEventListener("click", () => {
+      if (codes.length === 0) {
+        statusMsg.textContent = "Nothing to download (no codes).";
+        return;
+      }
+
+      // Simple one-column CSV; header optional
+      const header = "code";
+      const csvContent = [header, ...codes]
+        .map(line => `"${String(line).replace(/"/g, '""')}"`)
+        .join("\r\n");
+
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const now = new Date();
+      const timestamp = now.toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `barcodes-${timestamp}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      statusMsg.textContent = "CSV downloaded.";
+    });
+
+    // Keep codes + set in sync when user edits manually
+    output.addEventListener("input", () => {
+      codes = output.value.split("\n").filter(Boolean);
+      codeSet = new Set(codes);
+      countBadge.textContent = codes.length;
+    });
+
+    window.addEventListener("pagehide", stopScanning);
+    window.addEventListener("beforeunload", stopScanning);
+  </script>
+</body>
+</html>
